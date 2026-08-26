@@ -1,8 +1,13 @@
 package com.b6star.chatui.ui
 
-import androidx.compose.foundation.isSystemInDarkTheme
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -11,6 +16,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -18,9 +25,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.b6star.chatui.ui.theme.AgentColors
+import com.b6star.chatui.ui.theme.AgentTheme
 
 @Composable
 fun AiChatMarkdownView(
@@ -32,55 +42,40 @@ fun AiChatMarkdownView(
     onAskAi: (String) -> Unit = {},
     onShowDetailsAtIndex: (Int) -> Unit = {}
 ) {
-    val isDark = isSystemInDarkTheme()
-    val primaryColor = MaterialTheme.colorScheme.primary
-    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
-    val surfaceVariantColor = MaterialTheme.colorScheme.surfaceVariant
-
-    val userTextColor = if (isDark) AgentPalette.darkUserMessageTextColor else AgentPalette.lightUserMessageTextColor
-    val textColor = if (isUser) userTextColor else onSurfaceColor
-
-    val emphasisColor = if (isDark) AgentPalette.darkEmphasisTextColor else AgentPalette.lightEmphasisTextColor
-    val variantTextColor = if (isDark) AgentPalette.darkVariantTextColor else AgentPalette.lightVariantTextColor
-    val primaryTextColor = if (isDark) AgentPalette.darkPrimaryTextColor else AgentPalette.lightPrimaryTextColor
+    val colors = AgentTheme.colors
+    val context = LocalContext.current
+    val textColor = if (isUser) colors.userText else colors.assistantText
 
     SelectionContainer {
-        Column(modifier = modifier) {
-            // [성능 최적화 3번: 파싱 결과 캐싱]
-            // parseMarkdownBlocks()는 메시지 문자열을 한 줄씩 검사하는 비용이 큰 작업인데,
-            // remember가 없으면 키보드 표시, 드로어 열기 등 '아무 상태 변화'에도
-            // 이 컴포저블이 재실행되면서 매번 전체를 다시 파싱했다.
-            // key를 markdown으로 지정해 "문자열이 실제로 바뀔 때만" 재파싱한다.
+        Column(
+            modifier = modifier,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
             val blocks = remember(markdown) { parseMarkdownBlocks(markdown) }
             blocks.forEach { block ->
                 when (block) {
                     is MarkdownBlock.Text -> {
-                        // [성능 최적화 3번의 연장]
-                        // markdownText()는 정규식으로 인라인 마크다운(굵게/기울임/링크 등)을
-                        // 해석해 AnnotatedString을 만드는 비용 큰 작업이다.
-                        // 텍스트 내용과 색상(다크모드 전환 시 바뀜)이 같으면 기존 결과를 재사용한다.
-                        val text = remember(
-                            block.value, primaryColor, primaryTextColor,
-                            emphasisColor, variantTextColor, surfaceVariantColor
-                        ) {
+                        val aiPrefix = stringResource(com.b6star.chatui.R.string.ai_answer_prefix)
+                        val showDetails = stringResource(com.b6star.chatui.R.string.show_details_link)
+                        val text = remember(block.value, colors, aiPrefix, showDetails) {
                             markdownText(
                                 value = block.value,
-                                primaryColor = primaryColor,
-                                primaryTextColor = primaryTextColor,
-                                emphasisColor = emphasisColor,
-                                variantTextColor = variantTextColor,
-                                surfaceVariantColor = surfaceVariantColor
+                                colors = colors,
+                                aiPrefix = aiPrefix,
+                                showDetails = showDetails
                             )
                         }
                         ClickableText(
                             text = text,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            modifier = Modifier.padding(vertical = 2.dp),
                             style = MaterialTheme.typography.bodyMedium.copy(color = textColor),
                             onClick = { offset ->
                                 text.getStringAnnotations("URL", offset, offset)
-                                    .firstOrNull()?.item
-                                    ?.takeIf { isImageUrl(it) }
-                                    ?.let(onImageClick)
+                                    .firstOrNull()?.item?.let { url ->
+                                        if (isImageUrl(url, context)) onImageClick(url)
+                                        else openInBrowser(context, url)
+                                        return@ClickableText
+                                    }
 
                                 text.getStringAnnotations("ACTION", offset, offset)
                                     .firstOrNull()?.let {
@@ -101,6 +96,7 @@ fun AiChatMarkdownView(
                             onAskAi = onAskAi
                         )
                     }
+                    MarkdownBlock.Spacer -> Spacer(modifier = Modifier.height(12.dp))
                 }
             }
         }
@@ -110,6 +106,7 @@ fun AiChatMarkdownView(
 sealed interface MarkdownBlock {
     data class Text(val value: String) : MarkdownBlock
     data class Code(val value: String, val language: String) : MarkdownBlock
+    data object Spacer : MarkdownBlock
 }
 
 fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
@@ -122,7 +119,13 @@ fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
         if (line.trimStart().startsWith("```")) {
             if (code == null) {
                 if (text.isNotBlank()) {
-                    result += MarkdownBlock.Text(text.toString().trim())
+                    val raw = text.toString()
+                    result += MarkdownBlock.Text(raw.trim())
+                    if (raw.endsWith("\n\n")) {
+                        result += MarkdownBlock.Spacer
+                    }
+                } else if (text.isNotEmpty() && result.isNotEmpty() && result.last() != MarkdownBlock.Spacer) {
+                    result += MarkdownBlock.Spacer
                 }
                 text.clear()
                 code = StringBuilder()
@@ -143,26 +146,29 @@ fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
 
     if (code != null) {
         result += MarkdownBlock.Code(code.toString().trimEnd(), language)
-    }
-    if (text.isNotBlank()) {
+    } else if (text.isNotBlank()) {
         result += MarkdownBlock.Text(text.toString().trim())
     }
+
+    while (result.firstOrNull() == MarkdownBlock.Spacer) result.removeAt(0)
+    while (result.lastOrNull() == MarkdownBlock.Spacer) result.removeAt(result.lastIndex)
 
     return result
 }
 
 fun markdownText(
     value: String,
-    primaryColor: Color,
-    primaryTextColor: Color,
-    emphasisColor: Color,
-    variantTextColor: Color,
-    surfaceVariantColor: Color
+    colors: AgentColors,
+    aiPrefix: String,
+    showDetails: String
 ): AnnotatedString = buildAnnotatedString {
     var detailIndex = 0
-    value.lines().forEachIndexed { index, line ->
-        if (index > 0) append("\n")
+    val lines = value.lines()
+
+    lines.forEachIndexed { index, line ->
         val clean = line.trimStart()
+        val headingIndent = line.takeWhile { it == '\t' || it == ' ' }
+        val visualLine = line.replace(Regex("^\\t+")) { "    ".repeat(it.value.length) }
         val heading = clean.takeWhile { it == '#' }.length
         val content = clean.removePrefix("#".repeat(heading)).trim()
 
@@ -174,28 +180,30 @@ fun markdownText(
         when {
             isThinkingStep -> {
                 withStyle(SpanStyle(
-                    color = AgentPalette.metadataTextColor.copy(alpha = 0.7f),
+                    color = colors.metadataText.copy(alpha = 0.7f),
                     fontSize = 13.sp,
                     fontStyle = FontStyle.Italic
                 )) {
-                    append(line)
+                    appendInlineMarkdown(value = visualLine, colors = colors)
+                    if (index < lines.lastIndex) append("\n")
                 }
             }
-            clean.startsWith("**AI 답변:**") -> {
+            clean.startsWith(aiPrefix) -> {
                 withStyle(SpanStyle(
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 16.sp,
-                    color = primaryColor
+                    color = colors.primary
                 )) {
-                    append(line)
+                    appendInlineMarkdown(value = visualLine, colors = colors)
+                    if (index < lines.lastIndex) append("\n")
                 }
             }
-            clean.contains("[자세히 보기]") -> {
-                val linkText = " [자세히 보기]"
-                append(line.replace("[자세히 보기]", ""))
+            clean.contains(showDetails) -> {
+                val linkText = " $showDetails"
+                append(line.replace(showDetails, ""))
                 val start = length
                 withStyle(SpanStyle(
-                    color = primaryColor,
+                    color = colors.primary,
                     fontWeight = FontWeight.Bold,
                     textDecoration = TextDecoration.Underline
                 )) {
@@ -203,74 +211,99 @@ fun markdownText(
                 }
                 addStringAnnotation("ACTION", "SHOW_DETAILS:$detailIndex", start = start, end = length)
                 detailIndex++
+                if (index < lines.lastIndex) append("\n")
             }
             heading > 0 -> {
-                val fontSize = (20 - heading * 2).let { if (it < 14) 14 else it }.sp
-                withStyle(SpanStyle(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = fontSize,
-                    color = primaryTextColor
-                )) {
-                    append(content)
+                val fontSize = (48 - heading * 10).let { if (it < 14) 14 else it }.sp
+                val headingIndentWidth = (
+                    headingIndent.count { it == '\t' } * 16 +
+                        headingIndent.count { it == ' ' } * 4
+                    ).sp
+
+                val isListInHeader = content.startsWith("-") || content.startsWith("*")
+                val finalContent = if (isListInHeader) content.drop(1).trimStart() else content
+                val headerSymbol = if (isListInHeader) {
+                    when (heading) {
+                        1 -> "┃ "
+                        2 -> "┋ "
+                        3 -> "· "
+                        else -> "- "
+                    }
+                } else ""
+                val symbolColor = if (colors.isDark) Color.White else Color.Black
+
+                withStyle(
+                    androidx.compose.ui.text.TextStyle(
+                        lineHeight = fontSize,
+                        platformStyle = androidx.compose.ui.text.PlatformTextStyle(
+                            includeFontPadding = false
+                        ),
+                        lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
+                            alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
+                            trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.Both
+                        )
+                    ).toParagraphStyle().copy(
+                        textIndent = TextIndent(
+                            firstLine = headingIndentWidth,
+                            restLine = headingIndentWidth
+                        )
+                    )
+                ) {
+                    withStyle(SpanStyle(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = fontSize,
+                        color = colors.primary
+                    )) {
+                        if (headerSymbol.isNotEmpty()) {
+                            withStyle(SpanStyle(color = symbolColor)) {
+                                append(headerSymbol)
+                            }
+                        }
+                        appendInlineMarkdown(value = finalContent, colors = colors)
+                    }
+                // Move newline inside the block to follow the header\'s lineHeight
+                if (index < lines.lastIndex) append("\n")
                 }
             }
             clean.startsWith("> ") -> {
                 withStyle(SpanStyle(
                     fontStyle = FontStyle.Italic,
-                    color = variantTextColor
+                    color = colors.quote
                 )) {
                     append("▎ ")
-                    appendInlineMarkdown(
-                        value = clean.drop(2),
-                        primaryTextColor = primaryTextColor,
-                        emphasisColor = emphasisColor,
-                        surfaceVariantColor = surfaceVariantColor,
-                        primaryColor = primaryColor
-                    )
+                    appendInlineMarkdown(value = clean.drop(2), colors = colors)
+                    if (index < lines.lastIndex) append("\n")
                 }
             }
             clean.startsWith("- ") || clean.startsWith("* ") -> {
-                withStyle(SpanStyle(color = primaryTextColor)) {
-                    append("• ")
+                val indent = headingIndent.replace("\t", "    ")
+                append(indent)
+                val symbolColor = if (colors.isDark) Color.White else Color.Black
+                withStyle(SpanStyle(color = symbolColor)) {
+                    append("· ")
                 }
-                appendInlineMarkdown(
-                    value = clean.drop(2),
-                    primaryTextColor = primaryTextColor,
-                    emphasisColor = emphasisColor,
-                    surfaceVariantColor = surfaceVariantColor,
-                    primaryColor = primaryColor
-                )
+                appendInlineMarkdown(value = clean.drop(2), colors = colors)
+                if (index < lines.lastIndex) append("\n")
             }
             clean.matches(Regex("^\\d+\\.\\s.*")) -> {
                 val number = clean.substringBefore(".")
-                withStyle(SpanStyle(color = primaryTextColor)) {
+                withStyle(SpanStyle(color = colors.onBackground)) {
                     append("$number. ")
                 }
-                appendInlineMarkdown(
-                    value = clean.substringAfter(". ").trim(),
-                    primaryTextColor = primaryTextColor,
-                    emphasisColor = emphasisColor,
-                    surfaceVariantColor = surfaceVariantColor,
-                    primaryColor = primaryColor
-                )
+                appendInlineMarkdown(value = clean.substringAfter(". ").trim(), colors = colors)
+                if (index < lines.lastIndex) append("\n")
             }
-            else -> appendInlineMarkdown(
-                value = line,
-                primaryTextColor = primaryTextColor,
-                emphasisColor = emphasisColor,
-                surfaceVariantColor = surfaceVariantColor,
-                primaryColor = primaryColor
-            )
+            else -> {
+                appendInlineMarkdown(value = visualLine, colors = colors)
+                if (index < lines.lastIndex) append("\n")
+            }
         }
     }
 }
 
 fun AnnotatedString.Builder.appendInlineMarkdown(
     value: String,
-    primaryTextColor: Color,
-    emphasisColor: Color,
-    surfaceVariantColor: Color,
-    primaryColor: Color
+    colors: AgentColors
 ) {
     val regex = Regex("""(\*\*.+?\*\*)|(\*.+?\*)|(`.+?`)|(\[.+?\]\(.+?\))""")
     var cursor = 0
@@ -281,7 +314,7 @@ fun AnnotatedString.Builder.appendInlineMarkdown(
 
         when {
             token.startsWith("**") -> {
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = emphasisColor)) {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = colors.emphasis)) {
                     append(token.drop(2).dropLast(2))
                 }
             }
@@ -293,8 +326,8 @@ fun AnnotatedString.Builder.appendInlineMarkdown(
             token.startsWith("`") -> {
                 withStyle(SpanStyle(
                     fontFamily = FontFamily.Monospace,
-                    background = surfaceVariantColor,
-                    color = primaryColor
+                    background = colors.inlineCodeBackground,
+                    color = colors.inlineCodeText
                 )) {
                     append(token.drop(1).dropLast(1))
                 }
@@ -303,7 +336,7 @@ fun AnnotatedString.Builder.appendInlineMarkdown(
                 val linkText = token.substringAfter("[").substringBefore("]")
                 val linkUrl = token.substringAfter("](").removeSuffix(")")
                 withStyle(SpanStyle(
-                    color = primaryTextColor,
+                    color = colors.primary,
                     textDecoration = TextDecoration.Underline
                 )) {
                     addStringAnnotation("URL", linkUrl, start = length, end = length + linkText.length)
@@ -318,6 +351,20 @@ fun AnnotatedString.Builder.appendInlineMarkdown(
     append(value.substring(cursor))
 }
 
-fun isImageUrl(url: String): Boolean =
-    url.startsWith("content://") ||
-            Regex("\\.(png|jpe?g|gif|webp|heic)(\\?|%|$)", RegexOption.IGNORE_CASE).containsMatchIn(url)
+fun isImageUrl(url: String, context: Context? = null): Boolean {
+    if (url.startsWith("content://")) {
+        val mimeType = context?.contentResolver?.getType(Uri.parse(url))
+        if (mimeType != null) {
+            return mimeType.startsWith("image/")
+        }
+        // Fallback to extension check if mime type is null
+    }
+    return Regex("\\.(png|jpe?g|gif|webp|heic)(\\?|%|$)", RegexOption.IGNORE_CASE).containsMatchIn(url)
+}
+
+fun openInBrowser(context: Context, url: String) {
+    val target = if (!url.contains("://")) "https://$url" else url
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target)))
+    }
+}

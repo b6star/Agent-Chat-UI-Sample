@@ -24,9 +24,9 @@ object Utils {
     fun calculateCostKrw(costUsd: Double): Double = costUsd * EXCHANGE_RATE_KRW
 
     fun formatCost(krw: Double): String = when {
-        krw <= 0.0 -> "₩0"
-        krw < 1.0 -> "₩%.2f".format(krw)
-        else -> "₩%,.0f".format(krw)
+        krw <= 0.0 -> "\$0"
+        krw < 1.0 -> "\$%.2f".format(krw)
+        else -> "\$%,.0f".format(krw)
     }
 
     fun formatDurationMs(ms: Long): String = when {
@@ -34,7 +34,7 @@ object Utils {
         else -> "${ms}ms"
     }
 
-    fun formatCurrency(amount: Double): String = "₩%,.0f".format(amount)
+    fun formatCurrency(amount: Double): String = "\$%,.0f".format(amount)
 
     fun getDeviceModel(): String = Build.MODEL ?: "unknown"
 

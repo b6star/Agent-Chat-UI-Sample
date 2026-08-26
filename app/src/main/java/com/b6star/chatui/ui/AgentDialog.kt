@@ -7,7 +7,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -38,19 +37,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.b6star.chatui.R
 import com.b6star.chatui.ai.ChatResponse
 import com.b6star.chatui.data.model.ChatMessage
 import com.b6star.chatui.data.model.ChatSession
+import com.b6star.chatui.ui.theme.AgentTheme
 import com.b6star.chatui.util.Utils
+import com.b6star.chatui.viewmodel.AgentViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -60,18 +61,19 @@ fun SimpleDetailListDialog(
     data: ChatResponse.ShowDetails,
     onDismiss: () -> Unit
 ) {
+    val colors = AgentTheme.colors
     val sortedItems = remember(data.items) { data.items.reversed() }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(data.title, fontWeight = FontWeight.Bold) },
+        title = { Text(data.title, fontWeight = FontWeight.Bold, color = colors.onBackground) },
         text = {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 450.dp),
                 shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                color = colors.surface.copy(alpha = 0.5f)
             ) {
                 LazyColumn(
                     modifier = Modifier.padding(8.dp),
@@ -83,16 +85,16 @@ fun SimpleDetailListDialog(
                                 .fillMaxWidth()
                                 .padding(vertical = 4.dp)
                         ) {
-                            Text(item.title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            Text(item.title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = colors.onBackground)
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(item.date, style = MaterialTheme.typography.labelSmall)
+                                Text(item.date, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
                                 Text(
                                     Utils.formatCurrency(item.amount),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary
+                                    color = colors.primary
                                 )
                             }
                             HorizontalDivider(modifier = Modifier.padding(top = 8.dp), thickness = 0.5.dp)
@@ -103,7 +105,7 @@ fun SimpleDetailListDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("닫기")
+                Text(stringResource(R.string.close))
             }
         }
     )
@@ -114,6 +116,7 @@ fun MessageDetailDialog(
     message: ChatMessage,
     onDismiss: () -> Unit
 ) {
+    val colors = AgentTheme.colors
     var isFirstPromptExpanded by remember { mutableStateOf(false) }
     var isFirstResponseExpanded by remember { mutableStateOf(false) }
     var isSecondPromptExpanded by remember { mutableStateOf(false) }
@@ -122,7 +125,7 @@ fun MessageDetailDialog(
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surface,
+            color = colors.surface,
             tonalElevation = 6.dp,
             modifier = Modifier
                 .fillMaxWidth()
@@ -136,14 +139,15 @@ fun MessageDetailDialog(
                 horizontalAlignment = Alignment.Start
             ) {
                 Text(
-                    text = "상세정보",
+                    text = stringResource(R.string.details),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
+                    color = colors.onBackground,
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
 
-                DetailRow("Provider", message.provider ?: "mock")
-                DetailRow("Model", message.modelName ?: "Unknown")
+                DetailRow(stringResource(R.string.provider_label), message.provider ?: "mock")
+                DetailRow(stringResource(R.string.model_label), message.modelName ?: stringResource(R.string.unknown))
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
                 DetailRow("Response Time", Utils.formatDurationMs(message.responseTimeMs ?: 0))
@@ -153,7 +157,7 @@ fun MessageDetailDialog(
                     DetailRow("Thoughts Tokens", String.format(Locale.getDefault(), "%,d", message.thoughtsTokens ?: 0))
                 }
                 DetailRow("Total Tokens", String.format(Locale.getDefault(), "%,d", message.totalTokens ?: 0))
-                DetailRow("Estimated Cost", Utils.formatCost(message.estimatedCostKrw ?: 0.0))
+                DetailRow("Estimated Cost", Utils.formatCost(message.estimatedCostUsd ?: 0.0))
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
@@ -173,7 +177,7 @@ fun MessageDetailDialog(
 
                     message.firstPassPrompt?.let {
                         ExpandablePassSection(
-                            title = "1st Pass: 전송 프롬프트",
+                            title = stringResource(R.string.pass_1_prompt),
                             content = it,
                             isExpanded = isFirstPromptExpanded,
                             onToggle = { isFirstPromptExpanded = !isFirstPromptExpanded },
@@ -183,7 +187,7 @@ fun MessageDetailDialog(
 
                     message.firstPassResponse?.let {
                         ExpandablePassSection(
-                            title = "1st Pass: AI 응답 원본 JSON",
+                            title = stringResource(R.string.pass_1_json),
                             content = it,
                             isExpanded = isFirstResponseExpanded,
                             onToggle = { isFirstResponseExpanded = !isFirstResponseExpanded },
@@ -197,7 +201,7 @@ fun MessageDetailDialog(
 
                     message.secondPassPrompt?.let {
                         ExpandablePassSection(
-                            title = "2nd Pass: 전송 프롬프트",
+                            title = stringResource(R.string.pass_2_prompt),
                             content = it,
                             isExpanded = isSecondPromptExpanded,
                             onToggle = { isSecondPromptExpanded = !isSecondPromptExpanded },
@@ -207,7 +211,7 @@ fun MessageDetailDialog(
 
                     message.secondPassResponse?.let {
                         ExpandablePassSection(
-                            title = "2nd Pass: AI 응답 원본",
+                            title = stringResource(R.string.pass_2_json),
                             content = it,
                             isExpanded = isSecondResponseExpanded,
                             onToggle = { isSecondResponseExpanded = !isSecondResponseExpanded },
@@ -223,7 +227,7 @@ fun MessageDetailDialog(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text("Close")
+                    Text(stringResource(R.string.close))
                 }
             }
         }
@@ -238,6 +242,7 @@ fun ExpandablePassSection(
     onToggle: () -> Unit,
     charCount: Int
 ) {
+    val colors = AgentTheme.colors
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -250,14 +255,14 @@ fun ExpandablePassSection(
             Text(
                 text = "$title (${charCount}자)",
                 fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.primary,
+                color = colors.primary,
                 fontWeight = FontWeight.SemiBold
             )
             Spacer(modifier = Modifier.weight(1f))
             Icon(
                 imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = colors.primary,
                 modifier = Modifier.size(18.dp)
             )
         }
@@ -273,12 +278,12 @@ fun ExpandablePassSection(
                     .fillMaxWidth()
                     .padding(top = 4.dp),
                 shape = RoundedCornerShape(8.dp),
-                color = if (isSystemInDarkTheme()) Color(0xFF1E293B) else Color(0xFFF1F5F9)
+                color = colors.background
             ) {
                 SelectionContainer {
                     Text(
                         text = content,
-                        color = if (isSystemInDarkTheme()) Color(0xFFCBD5E1) else Color(0xFF475569),
+                        color = colors.onSurfaceVariant,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
                         modifier = Modifier.padding(10.dp)
@@ -297,10 +302,11 @@ fun SessionInfoDialog(
     onRename: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val colors = AgentTheme.colors
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surface,
+            color = colors.surface,
             tonalElevation = 6.dp,
             modifier = Modifier
                 .fillMaxWidth()
@@ -314,13 +320,14 @@ fun SessionInfoDialog(
                 horizontalAlignment = Alignment.Start
             ) {
                 Text(
-                    text = "대화창 정보",
+                    text = stringResource(R.string.session_info),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
+                    color = colors.onBackground,
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
 
-                DetailRow("제목", session.title)
+                DetailRow(stringResource(R.string.session_title_label), session.title)
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
@@ -340,7 +347,7 @@ fun SessionInfoDialog(
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
                 DetailRow("Total Tokens", String.format(Locale.getDefault(), "%,d", stats?.totalTokens ?: 0))
-                DetailRow("Total Est. Cost", Utils.formatCost(stats?.totalCostKrw ?: 0.0))
+                DetailRow("Total Est. Cost", Utils.formatCost(stats?.totalCost ?: 0.0))
 
                 Spacer(modifier = Modifier.height(20.dp))
 
@@ -348,23 +355,25 @@ fun SessionInfoDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    val buttonColors = ButtonDefaults.buttonColors(
+                        containerColor = colors.onBackground,
+                        contentColor = colors.background
+                    )
                     Button(
                         onClick = onDelete,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError
-                        )
+                        colors = buttonColors
                     ) {
-                        Text("Delete")
+                        Text(stringResource(R.string.delete))
                     }
                     Button(
                         onClick = onRename,
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp)
+                        shape = RoundedCornerShape(12.dp),
+                        colors = buttonColors
                     ) {
-                        Text("Rename")
+                        Text(stringResource(R.string.rename))
                     }
                 }
             }
@@ -378,6 +387,7 @@ fun RenameSessionDialog(
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val colors = AgentTheme.colors
     var text by remember { mutableStateOf(currentTitle) }
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -393,7 +403,7 @@ fun RenameSessionDialog(
             keyboard?.hide()
             onDismiss()
         },
-        title = { Text("대화창 이름 변경", fontWeight = FontWeight.Bold) },
+        title = { Text(stringResource(R.string.rename_title), fontWeight = FontWeight.Bold, color = colors.onBackground) },
         text = {
             OutlinedTextField(
                 value = text,
@@ -402,7 +412,14 @@ fun RenameSessionDialog(
                     .fillMaxWidth()
                     .focusRequester(focusRequester),
                 singleLine = true,
-                label = { Text("새 이름") }
+                label = { Text(stringResource(R.string.new_name_label)) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = colors.onBackground,
+                    unfocusedTextColor = colors.onBackground,
+                    cursorColor = colors.primary,
+                    focusedBorderColor = colors.primary,
+                    unfocusedBorderColor = colors.onSurfaceVariant
+                )
             )
         },
         confirmButton = {
@@ -413,7 +430,7 @@ fun RenameSessionDialog(
                 },
                 enabled = text.trim().isNotEmpty()
             ) {
-                Text("확인")
+                Text(stringResource(R.string.confirm))
             }
         },
         dismissButton = {
@@ -421,7 +438,7 @@ fun RenameSessionDialog(
                 keyboard?.hide()
                 onDismiss()
             }) {
-                Text("취소")
+                Text(stringResource(R.string.cancel))
             }
         }
     )
@@ -429,6 +446,7 @@ fun RenameSessionDialog(
 
 @Composable
 fun DetailRow(label: String, value: String) {
+    val colors = AgentTheme.colors
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -438,12 +456,13 @@ fun DetailRow(label: String, value: String) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
-            color = AgentPalette.metadataTextColor
+            color = colors.metadataText
         )
         Text(
             text = value,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
+            color = colors.onBackground,
             textAlign = TextAlign.End
         )
     }

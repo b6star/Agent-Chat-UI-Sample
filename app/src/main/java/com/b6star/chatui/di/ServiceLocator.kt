@@ -18,6 +18,6 @@ object ServiceLocator {
 
     val chatRepository: ChatRepository by lazy { ChatRepository() }
 
-    // TODO: 실제 LLM 연결 시 MockAiGateway 대신 AiGateway 구현체로 교체
+    // TODO: Replace MockAiGateway with a real AiGateway implementation when connecting to an LLM.
     val aiGateway: AiGateway by lazy { MockAiGateway() }
 }
