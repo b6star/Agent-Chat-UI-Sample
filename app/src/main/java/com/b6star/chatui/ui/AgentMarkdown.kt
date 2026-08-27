@@ -40,6 +40,7 @@ fun AiChatMarkdownView(
     isStreaming: Boolean = false,
     onImageClick: (String) -> Unit = {},
     onAskAi: (String) -> Unit = {},
+    onSlashCommand: (String) -> Unit = {},
     onShowDetailsAtIndex: (Int) -> Unit = {}
 ) {
     val colors = AgentTheme.colors
@@ -79,7 +80,9 @@ fun AiChatMarkdownView(
 
                                 text.getStringAnnotations("ACTION", offset, offset)
                                     .firstOrNull()?.let {
-                                        if (it.item.startsWith("SHOW_DETAILS:")) {
+                                        if (it.item.startsWith("SLASH_COMMAND:")) {
+                                            onSlashCommand(it.item.removePrefix("SLASH_COMMAND:"))
+                                        } else if (it.item.startsWith("SHOW_DETAILS:")) {
                                             val index = it.item.substringAfter("SHOW_DETAILS:").toIntOrNull() ?: 0
                                             onShowDetailsAtIndex(index)
                                         }
@@ -91,6 +94,7 @@ fun AiChatMarkdownView(
                         val isMermaid = block.language == "mermaid"
                         CodeWebView(
                             code = block.value,
+                            declaredLanguage = block.language,
                             mermaid = isMermaid && !isStreaming,
                             renderKey = if (isStreaming) 0 else markdown.hashCode(),
                             onAskAi = onAskAi
@@ -109,49 +113,63 @@ sealed interface MarkdownBlock {
     data object Spacer : MarkdownBlock
 }
 
+private const val THINKING_STEP_PREFIX = "THINKING_STEP"
+private val THINKING_STEP_SYMBOLS = setOf("🔍", "📊", "⚙️", "📝", "🔄", "✅", "📅", "🏷️")
+
 fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
     val result = mutableListOf<MarkdownBlock>()
-    val text = StringBuilder()
-    var code: StringBuilder? = null
+    val textBuffer = StringBuilder()
+    var codeBuffer: StringBuilder? = null
     var language = ""
+
+    fun flushText() {
+        val raw = textBuffer.toString()
+        if (raw.isBlank()) {
+            if (raw.count { it == '\n' } >= 2) {
+                if (result.lastOrNull() !is MarkdownBlock.Spacer) {
+                    result += MarkdownBlock.Spacer
+                }
+            }
+        } else {
+            if (raw.startsWith("\n\n") && result.lastOrNull() !is MarkdownBlock.Spacer) {
+                result += MarkdownBlock.Spacer
+            }
+            result += MarkdownBlock.Text(raw.trim())
+            if (raw.endsWith("\n\n")) {
+                result += MarkdownBlock.Spacer
+            }
+        }
+        textBuffer.clear()
+    }
 
     markdown.lines().forEach { line ->
         if (line.trimStart().startsWith("```")) {
-            if (code == null) {
-                if (text.isNotBlank()) {
-                    val raw = text.toString()
-                    result += MarkdownBlock.Text(raw.trim())
-                    if (raw.endsWith("\n\n")) {
-                        result += MarkdownBlock.Spacer
-                    }
-                } else if (text.isNotEmpty() && result.isNotEmpty() && result.last() != MarkdownBlock.Spacer) {
-                    result += MarkdownBlock.Spacer
-                }
-                text.clear()
-                code = StringBuilder()
+            if (codeBuffer == null) {
+                flushText()
+                codeBuffer = StringBuilder()
                 language = line.trim().removePrefix("```").trim().lowercase()
             } else {
-                result += MarkdownBlock.Code(code.toString().trimEnd(), language)
-                code = null
+                result += MarkdownBlock.Code(codeBuffer.toString().trimEnd(), language)
+                codeBuffer = null
                 language = ""
             }
         } else {
-            if (code != null) {
-                code.appendLine(line)
+            if (codeBuffer != null) {
+                codeBuffer.appendLine(line)
             } else {
-                text.appendLine(line)
+                textBuffer.appendLine(line)
             }
         }
     }
 
-    if (code != null) {
-        result += MarkdownBlock.Code(code.toString().trimEnd(), language)
-    } else if (text.isNotBlank()) {
-        result += MarkdownBlock.Text(text.toString().trim())
+    if (codeBuffer != null) {
+        result += MarkdownBlock.Code(codeBuffer.toString().trimEnd(), language)
+    } else {
+        flushText()
     }
 
-    while (result.firstOrNull() == MarkdownBlock.Spacer) result.removeAt(0)
-    while (result.lastOrNull() == MarkdownBlock.Spacer) result.removeAt(result.lastIndex)
+    while (result.firstOrNull() is MarkdownBlock.Spacer) result.removeAt(0)
+    while (result.lastOrNull() is MarkdownBlock.Spacer) result.removeAt(result.lastIndex)
 
     return result
 }
@@ -172,10 +190,10 @@ fun markdownText(
         val heading = clean.takeWhile { it == '#' }.length
         val content = clean.removePrefix("#".repeat(heading)).trim()
 
-        val isThinkingStep = clean.startsWith("🔍") || clean.startsWith("📊") ||
-                clean.startsWith("⚙️") || clean.startsWith("📝") ||
-                clean.startsWith("🔄") || clean.startsWith("✅") ||
-                clean.startsWith("📅") || clean.startsWith("🏷️")
+        val thinkingStepSymbol = THINKING_STEP_SYMBOLS.firstOrNull { symbol ->
+            clean.startsWith(THINKING_STEP_PREFIX + symbol)
+        }
+        val isThinkingStep = thinkingStepSymbol != null
 
         when {
             isThinkingStep -> {
@@ -184,7 +202,11 @@ fun markdownText(
                     fontSize = 13.sp,
                     fontStyle = FontStyle.Italic
                 )) {
-                    appendInlineMarkdown(value = visualLine, colors = colors)
+                    // Keep the marker private to the renderer; show only the thinking-step symbol.
+                    appendInlineMarkdown(
+                        value = visualLine.replaceFirst(THINKING_STEP_PREFIX, ""),
+                        colors = colors
+                    )
                     if (index < lines.lastIndex) append("\n")
                 }
             }
@@ -222,14 +244,7 @@ fun markdownText(
 
                 val isListInHeader = content.startsWith("-") || content.startsWith("*")
                 val finalContent = if (isListInHeader) content.drop(1).trimStart() else content
-                val headerSymbol = if (isListInHeader) {
-                    when (heading) {
-                        1 -> "┃ "
-                        2 -> "┋ "
-                        3 -> "· "
-                        else -> "- "
-                    }
-                } else ""
+                val headerSymbol = if (isListInHeader) "• " else ""
                 val symbolColor = if (colors.isDark) Color.White else Color.Black
 
                 withStyle(
@@ -280,7 +295,7 @@ fun markdownText(
                 append(indent)
                 val symbolColor = if (colors.isDark) Color.White else Color.Black
                 withStyle(SpanStyle(color = symbolColor)) {
-                    append("· ")
+                    append("• ")
                 }
                 appendInlineMarkdown(value = clean.drop(2), colors = colors)
                 if (index < lines.lastIndex) append("\n")
@@ -324,12 +339,26 @@ fun AnnotatedString.Builder.appendInlineMarkdown(
                 }
             }
             token.startsWith("`") -> {
+                val inlineCode = token.drop(1).dropLast(1)
+                if (inlineCode.startsWith("/")) {
+                    withStyle(SpanStyle(
+                        fontFamily = FontFamily.Monospace,
+                        color = colors.primary,
+                        textDecoration = TextDecoration.Underline
+                    )) {
+                        val start = length
+                        append(inlineCode)
+                        addStringAnnotation("ACTION", "SLASH_COMMAND:$inlineCode", start, length)
+                    }
+                    cursor = match.range.last + 1
+                    return@forEach
+                }
                 withStyle(SpanStyle(
                     fontFamily = FontFamily.Monospace,
                     background = colors.inlineCodeBackground,
                     color = colors.inlineCodeText
                 )) {
-                    append(token.drop(1).dropLast(1))
+                    append(inlineCode)
                 }
             }
             token.startsWith("[") -> {

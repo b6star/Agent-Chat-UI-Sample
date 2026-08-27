@@ -100,6 +100,11 @@ fun AgentScreen(
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
         val keyboardController = LocalSoftwareKeyboardController.current
+        val isSlashSession = sessions
+            .firstOrNull { it.id == currentSessionId }
+            ?.title
+            ?.trim()
+            ?.startsWith("/") == true
 
         var showDetailDialog by remember { mutableStateOf<ChatMessage?>(null) }
         var showDeleteConfirmDialog by remember { mutableStateOf<Int?>(null) }
@@ -108,11 +113,21 @@ fun AgentScreen(
         var previewImageUrl by remember { mutableStateOf<String?>(null) }
         var showSettingsSheet by remember { mutableStateOf(false) }
         val sheetState = rememberModalBottomSheetState()
-
-        LaunchedEffect(messages.size, messages.lastOrNull()?.content, isLoading) {
+        LaunchedEffect(messages.size, messages.lastOrNull()?.content, currentSessionId, isLoading) {
             if (messages.isNotEmpty() || isLoading) {
                 delay(120)
-                listState.animateScrollToItem(0)
+                val currentSessionTitle = sessions
+                    .firstOrNull { it.id == currentSessionId }
+                    ?.title
+                    .orEmpty()
+                val isSlashSession = currentSessionTitle.trim().startsWith("/")
+
+                if (isSlashSession) {
+                    // Slash sessions contain only the explanation, so show its beginning.
+                    listState.scrollToItem(0, scrollOffset = Int.MAX_VALUE)
+                } else {
+                    listState.animateScrollToItem(0)
+                }
             }
         }
 
@@ -172,6 +187,7 @@ fun AgentScreen(
                         currentSessionId = currentSessionId,
                         isLoading = isLoading,
                         isStreaming = isStreaming,
+                        isSlashSession = isSlashSession,
                         listState = listState,
                         onInfoClick = { showDetailDialog = it },
                         onImageClick = { previewImageUrl = it },
@@ -180,6 +196,7 @@ fun AgentScreen(
                                 context.resources.getString(R.string.prompt_fix_mermaid, errorMessage)
                             )
                         },
+                        onSlashCommand = { command -> viewModel.sendMessage(command) },
                         onShowDetailsAtIndex = { msg, index ->
                             viewModel.showDetailsAtIndex(msg, index)
                         }
@@ -463,10 +480,12 @@ fun ChatArea(
     currentSessionId: Int?,
     isLoading: Boolean,
     isStreaming: Boolean,
+    isSlashSession: Boolean,
     listState: LazyListState,
     onInfoClick: (ChatMessage) -> Unit,
     onImageClick: (String) -> Unit,
     onAskAi: (String) -> Unit,
+    onSlashCommand: (String) -> Unit,
     onShowDetailsAtIndex: (ChatMessage, Int) -> Unit
 ) {
     val colors = AgentTheme.colors
@@ -521,9 +540,11 @@ fun ChatArea(
                     ChatBubble(
                         message,
                         isStreaming = isStreaming && message.id == streamingMessageId,
+                        showMetadata = !isSlashSession,
                         onInfoClick = { onInfoClick(message) },
                         onImageClick = onImageClick,
                         onAskAi = onAskAi,
+                        onSlashCommand = { command -> onSlashCommand(command) },
                         onShowDetailsAtIndex = { index ->
                             onShowDetailsAtIndex(message, index)
                         }
@@ -580,9 +601,12 @@ fun ChatInputArea(
     val csharpCommands = AgentViewModel.csharpCommands
     val sqlCommands = AgentViewModel.sqlCommands
     val javascriptCommands = AgentViewModel.javascriptCommands
+    val projectCommands = AgentViewModel.projectCommands
+    val aiConnectCommands = AgentViewModel.aiConnectCommands
+    val codeCommands = AgentViewModel.codeCommands
     val allSlashCommands = remember {
         (slashCommands + kotlinCommands + pythonCommands + javaCommands + cCommands + cppCommands +
-            csharpCommands + sqlCommands + javascriptCommands + "/mermaid-error")
+            csharpCommands + sqlCommands + javascriptCommands + projectCommands + aiConnectCommands + "/mermaid-error")
             .distinct()
     }
     val slashQuery = chatInput
@@ -591,8 +615,14 @@ fun ChatInputArea(
     val matchingSlashCommands = slashQuery?.let { query ->
         if (query == "/") {
             slashCommands
+        } else if (query == "/project") {
+            projectCommands
+        } else if (query == "/project/ai-connect") {
+            aiConnectCommands
+        } else if (query == "/code") {
+            codeCommands
         } else {
-            allSlashCommands.filter { it.startsWith(query) }
+            allSlashCommands.filter { it.contains(query, ignoreCase = true) }
         }
     }.orEmpty()
 
@@ -617,7 +647,7 @@ fun ChatInputArea(
                         Box {
                             AsyncImage(
                                 model = uri,
-                                contentDescription = "첨부 이미지 ${index + 1}",
+                                contentDescription = "Attached image ${index + 1}",
                                 modifier = Modifier
                                     .size(88.dp)
                                     .clip(RoundedCornerShape(12.dp))
@@ -631,16 +661,16 @@ fun ChatInputArea(
                                     .size(28.dp)
                                     .background(colors.background.copy(alpha = 0.75f), CircleShape)
                             ) {
-                                Icon(Icons.Outlined.Close, contentDescription = "첨부 이미지 제거", tint = colors.attachmentRemoveIcon)
+                                Icon(Icons.Outlined.Close, contentDescription = "Remove attached image", tint = colors.attachmentRemoveIcon)
                             }
                         }
                     }
                     selectedFileUris.forEachIndexed { index, uri ->
                         AssistChip(
                             onClick = { selectedFileUris = selectedFileUris.filterIndexed { itemIndex, _ -> itemIndex != index } },
-                            label = { Text(uri.lastPathSegment?.substringAfterLast('/') ?: "파일") },
+                            label = { Text(uri.lastPathSegment?.substringAfterLast('/') ?: "File") },
                             leadingIcon = { Icon(Icons.Outlined.Create, contentDescription = null) },
-                            trailingIcon = { Icon(Icons.Outlined.Close, contentDescription = "파일 제거") }
+                            trailingIcon = { Icon(Icons.Outlined.Close, contentDescription = "Remove file") }
                         )
                     }
                 }
@@ -672,7 +702,7 @@ fun ChatInputArea(
                         onClick = { showAttachmentMenu = true },
                         enabled = selectedImageUris.size + selectedFileUris.size < 10
                     ) {
-                        Icon(Icons.Outlined.Add, contentDescription = "첨부", tint = AgentTheme.colors.assistantText)
+                        Icon(Icons.Outlined.Add, contentDescription = "Attach", tint = AgentTheme.colors.assistantText)
                     }
                     DropdownMenu(
                         expanded = showAttachmentMenu,
@@ -783,12 +813,13 @@ fun ChatBubble(
     onInfoClick: (ChatMessage) -> Unit = {},
     onImageClick: (String) -> Unit = {},
     onAskAi: (String) -> Unit = {},
-    onShowDetailsAtIndex: (Int) -> Unit = {}
+    onSlashCommand: (String) -> Unit = {},
+    onShowDetailsAtIndex: (Int) -> Unit = {},
+    showMetadata: Boolean = true
 ) {
     val isUser = message.role == ChatMessage.ROLE_USER
     val colors = AgentTheme.colors
     val bubbleColor = if (isUser) colors.userBubble else colors.assistantBubble
-
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
@@ -810,23 +841,26 @@ fun ChatBubble(
                     isStreaming = isStreaming && !isUser,
                     onImageClick = onImageClick,
                     onAskAi = onAskAi,
+                    onSlashCommand = onSlashCommand,
                     onShowDetailsAtIndex = onShowDetailsAtIndex
                 )
             }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(top = 4.dp, start = 4.dp, end = 4.dp)
-            ) {
-                if (isUser) {
-                    Text(
-                        text = formatTime(message.timestamp),
-                        fontSize = 10.sp,
-                        color = colors.onBackground.copy(alpha = 0.5f)
-                    )
-                }
-                if (!isUser && message.role == ChatMessage.ROLE_ASSISTANT) {
-                    AiMetadataView(message, onInfoClick = { onInfoClick(message) })
+            if (showMetadata) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 4.dp, start = 4.dp, end = 4.dp)
+                ) {
+                    if (isUser) {
+                        Text(
+                            text = formatTime(message.timestamp),
+                            fontSize = 10.sp,
+                            color = colors.onBackground.copy(alpha = 0.5f)
+                        )
+                    }
+                    if (!isUser && message.role == ChatMessage.ROLE_ASSISTANT) {
+                        AiMetadataView(message, onInfoClick = { onInfoClick(message) })
+                    }
                 }
             }
         }

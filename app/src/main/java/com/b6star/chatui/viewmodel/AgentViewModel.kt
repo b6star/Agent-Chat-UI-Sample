@@ -25,10 +25,16 @@ import kotlinx.serialization.json.Json
 
 private const val CONTENT_SYNC_INTERVAL_MS = 250L
 
-enum class AppLanguage(val code: String) {
-    SYSTEM(""),
-    ENGLISH("en"),
-    KOREAN("ko")
+enum class AppLanguage(val code: String, val nativeName: String?) {
+    SYSTEM("", null),
+    ENGLISH("en", "English"),
+    KOREAN("ko", "한국어"),
+    SIMPLIFIED_CHINESE("zh-CN", "简体中文"),
+    JAPANESE("ja", "日本語"),
+    SPANISH("es", "Español"),
+    BRAZILIAN_PORTUGUESE("pt-BR", "Português (Brasil)"),
+    FRENCH("fr", "Français"),
+    GERMAN("de", "Deutsch")
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -38,8 +44,34 @@ class AgentViewModel(
 ) : ViewModel() {
 
     companion object {
+        val projectCommands = listOf(
+            "/project/ai-connect",
+            "/project/di",
+            "/project/data-storage",
+            "/project/rendering",
+            "/project/theme",
+            "/project/delay"
+        )
+        val aiConnectCommands = listOf(
+            "/project/ai-connect/prerequisites",
+            "/project/ai-connect/implementation",
+            "/project/ai-connect/streaming",
+            "/project/ai-connect/attachments",
+            "/project/ai-connect/error-handling",
+            "/project/ai-connect/testing",
+            "/project/ai-connect/operations",
+            "/project/ai-connect/firebase"
+        )
+        val codeCommands = listOf(
+            "/kotlin", "/python", "/java", "/c", "/cpp", "/csharp", "/sql", "/javascript", "/mermaid"
+        )
         // Commands shown for a bare slash or general prefix. Language variants are shown after selecting a language prefix.
-        val slashCommands = listOf("/help", "/clear", "/kotlin", "/python", "/java", "/c", "/cpp", "/csharp", "/sql", "/javascript", "/mermaid")
+        val slashCommands = listOf(
+            "/help",
+            "/project",
+            "/clear",
+            "/code"
+        )
         val kotlinCommands = listOf("/kotlin", "/kotlin-long", "/kotlin-very-long")
         val pythonCommands = listOf("/python", "/python-long", "/python-very-long")
         val javaCommands = listOf("/java", "/java-long", "/java-very-long")
@@ -420,8 +452,7 @@ class AgentViewModel(
         }
 
         val response = when (command) {
-            "/help" -> appContext.getString(R.string.slash_help_response) +
-                appContext.getString(R.string.slash_help_extra_response)
+            "/help" -> appContext.getString(R.string.slash_help_response)
             "/kotlin" -> appContext.getString(R.string.slash_kotlin_response)
             "/kotlin-long" -> appContext.getString(R.string.slash_kotlin_long_response)
             "/kotlin-very-long" -> appContext.getString(R.string.slash_kotlin_very_long_response)
@@ -446,34 +477,56 @@ class AgentViewModel(
             "/javascript" -> appContext.getString(R.string.slash_javascript_response)
             "/javascript-long" -> appContext.getString(R.string.slash_javascript_long_response)
             "/javascript-very-long" -> appContext.getString(R.string.slash_javascript_very_long_response)
+            "/code" -> appContext.getString(R.string.slash_code_response)
+            "/project" -> appContext.getString(R.string.slash_project_response)
+            "/project/ai-connect" -> appContext.getString(R.string.slash_project_ai_connect_response)
+            "/project/di" -> appContext.getString(R.string.slash_project_di_response)
+            "/project/data-storage" -> appContext.getString(R.string.slash_project_data_storage_response)
+            "/project/rendering" -> appContext.getString(R.string.slash_project_rendering_response)
+            "/project/theme" -> appContext.getString(R.string.slash_project_theme_response)
+            "/project/delay" -> appContext.getString(R.string.slash_project_delay_response)
+            "/project/ai-connect/prerequisites" -> appContext.getString(R.string.slash_project_ai_connect_prerequisites_response)
+            "/project/ai-connect/implementation" -> appContext.getString(R.string.slash_project_ai_connect_implementation_response)
+            "/project/ai-connect/streaming" -> appContext.getString(R.string.slash_project_ai_connect_streaming_response)
+            "/project/ai-connect/attachments" -> appContext.getString(R.string.slash_project_ai_connect_attachments_response)
+            "/project/ai-connect/error-handling" -> appContext.getString(R.string.slash_project_ai_connect_error_handling_response)
+            "/project/ai-connect/testing" -> appContext.getString(R.string.slash_project_ai_connect_testing_response)
+            "/project/ai-connect/operations" -> appContext.getString(R.string.slash_project_ai_connect_operations_response)
+            "/project/ai-connect/firebase" -> appContext.getString(R.string.slash_project_ai_connect_firebase_response)
             "/mermaid" -> appContext.getString(R.string.slash_mermaid_response)
             "/mermaid-error" -> appContext.getString(R.string.slash_mermaid_error_response)
             else -> appContext.getString(R.string.slash_unknown_response, command)
         }
 
-        var sessionId = _currentSessionId.value
-        if (sessionId == null) {
-            sessionId = chatRepository.insertSession(
+        var previousSessionId = _currentSessionId.value
+        if (previousSessionId == null) {
+            previousSessionId = chatRepository.insertSession(
                 ChatSession(title = command)
             ).toInt()
-            _currentSessionId.value = sessionId
+            _currentSessionId.value = previousSessionId
         }
 
         chatRepository.insertMessage(
             ChatMessage(
-                sessionId = sessionId,
+                sessionId = previousSessionId,
                 content = command,
                 role = ChatMessage.ROLE_USER
             )
         )
+        chatRepository.updateSessionLastTime(previousSessionId, System.currentTimeMillis())
+
+        val responseSessionId = chatRepository.insertSession(
+            ChatSession(title = command)
+        ).toInt()
+        _currentSessionId.value = responseSessionId
         chatRepository.insertMessage(
             ChatMessage(
-                sessionId = sessionId,
+                sessionId = responseSessionId,
                 content = response,
                 role = ChatMessage.ROLE_ASSISTANT
             )
         )
-        chatRepository.updateSessionLastTime(sessionId, System.currentTimeMillis())
+        chatRepository.updateSessionLastTime(responseSessionId, System.currentTimeMillis())
     }
 
     fun stopGeneration() {

@@ -253,7 +253,7 @@ fun ExpandablePassSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "$title (${charCount}자)",
+                text = "$title ($charCount chars)",
                 fontSize = 12.sp,
                 color = colors.primary,
                 fontWeight = FontWeight.SemiBold
