@@ -111,11 +111,7 @@ fun SettingsBottomSheet(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 AppLanguage.entries.forEach { language ->
-                    val displayName = when(language) {
-                        AppLanguage.SYSTEM -> stringResource(R.string.lang_system)
-                        AppLanguage.ENGLISH -> stringResource(R.string.lang_en)
-                        AppLanguage.KOREAN -> stringResource(R.string.lang_ko)
-                    }
+                    val displayName = language.nativeName ?: stringResource(R.string.lang_system)
                     LanguageOption(
                         label = displayName,
                         isSelected = selectedLanguage == language,
