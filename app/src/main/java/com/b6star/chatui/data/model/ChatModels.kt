@@ -19,7 +19,6 @@ data class ChatMessage(
     val thoughtsTokens: Int? = null,
     val responseTimeMs: Long? = null,
     val estimatedCostUsd: Double? = null,
-    val estimatedCostKrw: Double? = null,
     val modelName: String? = null,
     val agentVersion: String? = null,
     val provider: String? = null,

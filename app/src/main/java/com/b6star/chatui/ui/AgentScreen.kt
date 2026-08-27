@@ -6,9 +6,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -17,18 +17,33 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.CameraEnhance
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Create
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.FileUpload
+import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.Photo
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.SoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
@@ -36,8 +51,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.b6star.chatui.R
 import com.b6star.chatui.data.model.ChatMessage
+import com.b6star.chatui.data.model.ChatSession
 import com.b6star.chatui.ai.AiModelCatalog
+import com.b6star.chatui.di.ServiceLocator
+import com.b6star.chatui.ui.theme.AgentChatTheme
+import com.b6star.chatui.ui.theme.AgentTheme
 import com.b6star.chatui.util.Utils
+import com.b6star.chatui.viewmodel.AgentViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -55,10 +75,9 @@ private fun createChatImageUri(context: Context): Uri {
 @Composable
 fun AgentScreen(
     viewModel: AgentViewModel = viewModel {
-        AgentViewModel(com.b6star.chatui.di.ServiceLocator.context)
+        AgentViewModel(ServiceLocator.context)
     }
 ) {
-    val darkTheme = isSystemInDarkTheme()
     val messages by viewModel.messages.collectAsState()
     val sessions by viewModel.sessions.collectAsState()
     val currentSessionId by viewModel.currentSessionId.collectAsState()
@@ -71,24 +90,475 @@ fun AgentScreen(
     val isStreaming by viewModel.isStreaming.collectAsState()
     val detailItems by viewModel.detailItems.collectAsState()
     val sessionStats by viewModel.sessionStats.collectAsState()
+    val selectedTheme by viewModel.selectedTheme.collectAsState()
+    val selectedLanguage by viewModel.selectedLanguage.collectAsState()
+
+    AgentChatTheme(themeType = selectedTheme) {
+        val colors = AgentTheme.colors
+        val context = LocalContext.current
+        val listState = rememberLazyListState()
+        val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+        val scope = rememberCoroutineScope()
+        val keyboardController = LocalSoftwareKeyboardController.current
+
+        var showDetailDialog by remember { mutableStateOf<ChatMessage?>(null) }
+        var showDeleteConfirmDialog by remember { mutableStateOf<Int?>(null) }
+        var showSessionInfoDialog by remember { mutableStateOf<Int?>(null) }
+        var showRenameDialogFor by remember { mutableStateOf<Int?>(null) }
+        var previewImageUrl by remember { mutableStateOf<String?>(null) }
+        var showSettingsSheet by remember { mutableStateOf(false) }
+        val sheetState = rememberModalBottomSheetState()
+
+        LaunchedEffect(messages.size, messages.lastOrNull()?.content, isLoading) {
+            if (messages.isNotEmpty() || isLoading) {
+                delay(120)
+                listState.animateScrollToItem(0)
+            }
+        }
+
+        AgentPanel(
+            drawerState = drawerState,
+            sessions = sessions,
+            currentSessionId = currentSessionId,
+            onSessionClick = { sessionId ->
+                viewModel.selectSession(sessionId)
+                scope.launch { drawerState.close() }
+            },
+            onSessionInfoClick = { sessionId ->
+                viewModel.loadSessionStats(sessionId)
+                showSessionInfoDialog = sessionId
+            },
+            onCreateNewChat = {
+                viewModel.createNewChat()
+                scope.launch { drawerState.close() }
+            },
+            onSettingsClick = {
+                showSettingsSheet = true
+                scope.launch { drawerState.close() }
+            }
+        ) {
+            Scaffold(
+                containerColor = colors.background,
+                topBar = {
+                    AgentHeader(
+                        sessions = sessions,
+                        currentSessionId = currentSessionId,
+                        totalTokens = totalTokens,
+                        totalCost = totalCost,
+                        messages = messages,
+                        selectedModel = selectedModel,
+                        selectedHistoryLimit = selectedHistoryLimit,
+                        onMenuClick = { scope.launch { drawerState.open() } },
+                        onModelSelected = { viewModel.setModel(it) },
+                        onHistoryLimitSelected = { viewModel.setHistoryLimit(it) },
+                        onDeleteSession = { showDeleteConfirmDialog = it }
+                    )
+                }
+            ) { padding ->
+                val density = LocalDensity.current
+                var inputBarHeightPx by remember { mutableIntStateOf(0) }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                        .consumeWindowInsets(padding)
+                        .imePadding()
+                ) {
+                    ChatArea(
+                        modifier = Modifier.fillMaxSize(),
+                        bottomContentPadding = with(density) { inputBarHeightPx.toDp() } + 8.dp,
+                        messages = messages,
+                        currentSessionId = currentSessionId,
+                        isLoading = isLoading,
+                        isStreaming = isStreaming,
+                        listState = listState,
+                        onInfoClick = { showDetailDialog = it },
+                        onImageClick = { previewImageUrl = it },
+                        onAskAi = { errorMessage ->
+                            viewModel.sendMessage(
+                                context.resources.getString(R.string.prompt_fix_mermaid, errorMessage)
+                            )
+                        },
+                        onShowDetailsAtIndex = { msg, index ->
+                            viewModel.showDetailsAtIndex(msg, index)
+                        }
+                    )
+
+                    ChatInputArea(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .onGloballyPositioned { inputBarHeightPx = it.size.height },
+                        chatInput = chatInput,
+                        isLoading = isLoading || isStreaming,
+                        onChatInputChanged = { viewModel.onChatInputChanged(it) },
+                        onSendMessage = { input, images, files ->
+                            viewModel.sendMessage(input, images, files)
+                        },
+                        onStopGeneration = { viewModel.stopGeneration() },
+                        keyboardController = keyboardController
+                    )
+                }
+            }
+        }
+
+        // Dialogs & Sheets
+        if (showDetailDialog != null) {
+            MessageDetailDialog(
+                message = showDetailDialog!!,
+                onDismiss = { showDetailDialog = null }
+            )
+        }
+
+        previewImageUrl?.let { imageUrl ->
+            AlertDialog(
+                onDismissRequest = { previewImageUrl = null },
+                confirmButton = {},
+                text = {
+                    AsyncImage(
+                        model = imageUrl,
+                        contentDescription = stringResource(R.string.image_preview),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            )
+        }
+
+        if (showDeleteConfirmDialog != null) {
+            val isAll = showDeleteConfirmDialog == -1
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirmDialog = null },
+                title = { Text(if (isAll) stringResource(R.string.delete_all_chats_title) else stringResource(R.string.delete_chat_title)) },
+                text = { Text(if (isAll) stringResource(R.string.delete_all_chats_msg) else stringResource(R.string.delete_chat_msg)) },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            if (isAll) viewModel.clearChat()
+                            else viewModel.deleteSession(showDeleteConfirmDialog!!)
+                            showDeleteConfirmDialog = null
+                        },
+                        colors = ButtonDefaults.textButtonColors(contentColor = colors.error)
+                    ) {
+                        Text(stringResource(R.string.delete))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteConfirmDialog = null }) {
+                        Text(stringResource(R.string.cancel))
+                    }
+                }
+            )
+        }
+
+        if (showSessionInfoDialog != null) {
+            sessions.find { it.id == showSessionInfoDialog }?.let { session ->
+                SessionInfoDialog(
+                    session = session,
+                    stats = sessionStats,
+                    onDelete = {
+                        showSessionInfoDialog = null
+                        showDeleteConfirmDialog = session.id
+                    },
+                    onRename = { showRenameDialogFor = session.id },
+                    onDismiss = { showSessionInfoDialog = null }
+                )
+            }
+        }
+
+        if (showRenameDialogFor != null) {
+            sessions.find { it.id == showRenameDialogFor }?.let { session ->
+                RenameSessionDialog(
+                    currentTitle = session.title,
+                    onConfirm = { newTitle ->
+                        viewModel.renameSession(session.id!!, newTitle)
+                        showRenameDialogFor = null
+                    },
+                    onDismiss = { showRenameDialogFor = null }
+                )
+            }
+        }
+
+        if (detailItems != null) {
+            SimpleDetailListDialog(
+                data = detailItems!!,
+                onDismiss = { viewModel.dismissDetailItems() }
+            )
+        }
+
+        if (showSettingsSheet) {
+            SettingsBottomSheet(
+                selectedTheme = selectedTheme,
+                onThemeSelected = { theme -> viewModel.setTheme(theme) },
+                selectedLanguage = selectedLanguage,
+                onLanguageSelected = { lang -> viewModel.setLanguage(lang) },
+                onDismiss = { showSettingsSheet = false },
+                sheetState = sheetState
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AgentHeader(
+    sessions: List<ChatSession>,
+    currentSessionId: Int?,
+    totalTokens: Int,
+    totalCost: Double,
+    messages: List<ChatMessage>,
+    selectedModel: String,
+    selectedHistoryLimit: Int,
+    onMenuClick: () -> Unit,
+    onModelSelected: (String) -> Unit,
+    onHistoryLimitSelected: (Int) -> Unit,
+    onDeleteSession: (Int) -> Unit
+) {
+    val colors = AgentTheme.colors
+    var showModelSelector by remember { mutableStateOf(false) }
+
+    TopAppBar(
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = Color.Transparent
+        ),
+        title = {
+            val sessionTitle = sessions.find { it.id == currentSessionId }?.title ?: "AI Agent Chat"
+            Column {
+                Text(
+                    sessionTitle,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                if (totalTokens > 0) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "🪙 ${String.format(Locale.getDefault(), "%,d", totalTokens)}",
+                            fontSize = 11.sp,
+                            color = colors.metadataText
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            "💸 ${Utils.formatCost(totalCost)}",
+                            fontSize = 11.sp,
+                            color = colors.metadataText
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            "💬 ${messages.count { it.role == ChatMessage.ROLE_ASSISTANT }}",
+                            fontSize = 11.sp,
+                            color = colors.metadataText
+                        )
+                    }
+                }
+            }
+        },
+        navigationIcon = {
+            IconButton(onClick = onMenuClick) {
+                Icon(Icons.Outlined.Menu, contentDescription = "Menu")
+            }
+        },
+        actions = {
+            Box {
+                IconButton(onClick = { showModelSelector = true }) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_gemini_color),
+                        contentDescription = "Select Model",
+                        modifier = Modifier
+                            .size(24.dp)
+                            .alpha(if (selectedModel == AiModelCatalog.smartModelName || selectedModel == AiModelCatalog.liteModelName) 1f else 0.75f),
+                        tint = if (selectedModel == AiModelCatalog.liteModelName)
+                            colors.metadataText
+                        else colors.geminiIconTint
+                    )
+                }
+                DropdownMenu(
+                    expanded = showModelSelector,
+                    onDismissRequest = { showModelSelector = false },
+                    shape = RoundedCornerShape(20.dp),
+                    containerColor = colors.surface,
+                    modifier = Modifier.width(220.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.select_model),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.primary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                    )
+
+                    listOf(
+                        AiModelCatalog.liteModelName to "Flash Lite (Fast)",
+                        AiModelCatalog.defaultModelName to "Flash (Balanced)",
+                        AiModelCatalog.smartModelName to "Pro (Smart)"
+                    ).forEach { (modelId, label) ->
+                        DropdownMenuItem(
+                            text = { Text(label, style = MaterialTheme.typography.bodyMedium) },
+                            onClick = {
+                                onModelSelected(modelId)
+                                showModelSelector = false
+                            },
+                            leadingIcon = {
+                                RadioButton(
+                                    selected = selectedModel == modelId,
+                                    onClick = null,
+                                    colors = RadioButtonDefaults.colors(selectedColor = colors.primary)
+                                )
+                            },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                        )
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp, horizontal = 12.dp),
+                        thickness = 0.5.dp,
+                        color = colors.onSurfaceVariant.copy(alpha = 0.1f)
+                    )
+
+                    Text(
+                        text = stringResource(R.string.select_history_limit),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.primary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                    )
+
+                    listOf(
+                        20 to stringResource(R.string.history_20),
+                        50 to stringResource(R.string.history_50),
+                        -1 to stringResource(R.string.history_all)
+                    ).forEach { (limit, label) ->
+                        DropdownMenuItem(
+                            text = { Text(label, style = MaterialTheme.typography.bodyMedium) },
+                            onClick = {
+                                onHistoryLimitSelected(limit)
+                                showModelSelector = false
+                            },
+                            leadingIcon = {
+                                RadioButton(
+                                    selected = selectedHistoryLimit == limit,
+                                    onClick = null,
+                                    colors = RadioButtonDefaults.colors(selectedColor = colors.primary)
+                                )
+                            },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+
+            IconButton(onClick = {
+                currentSessionId?.let { onDeleteSession(it) }
+            }) {
+                Icon(Icons.Outlined.Delete, contentDescription = "Delete Current Chat")
+            }
+        }
+    )
+}
+
+@Composable
+fun ChatArea(
+    modifier: Modifier = Modifier,
+    bottomContentPadding: Dp = 0.dp,
+    messages: List<ChatMessage>,
+    currentSessionId: Int?,
+    isLoading: Boolean,
+    isStreaming: Boolean,
+    listState: LazyListState,
+    onInfoClick: (ChatMessage) -> Unit,
+    onImageClick: (String) -> Unit,
+    onAskAi: (String) -> Unit,
+    onShowDetailsAtIndex: (ChatMessage, Int) -> Unit
+) {
+    val colors = AgentTheme.colors
     val streamingMessageId = messages.lastOrNull { it.role == ChatMessage.ROLE_ASSISTANT }?.id
 
-    val listState = rememberLazyListState()
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
-    val context = LocalContext.current
-    val keyboardController = LocalSoftwareKeyboardController.current
+    if (messages.isEmpty() && currentSessionId == null) {
+        Box(
+            modifier = modifier.fillMaxSize().padding(bottom = bottomContentPadding),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_gemini_color),
+                    contentDescription = null,
+                    modifier = Modifier.size(64.dp),
+                    tint = colors.geminiIconTint
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(stringResource(R.string.welcome_msg), style = MaterialTheme.typography.headlineSmall, color = colors.onBackground)
+                Text(stringResource(R.string.welcome_desc), style = MaterialTheme.typography.bodyMedium, color = colors.metadataText)
+            }
+        }
+    } else {
+        LazyColumn(
+            state = listState,
+            modifier = modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = 16.dp,
+                bottom = 16.dp + bottomContentPadding
+            ),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            reverseLayout = true
+        ) {
+            if (isLoading) {
+                item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        AiLoadingIndicator(isClockwiseRotation = true, modifier = Modifier.size(32.dp))
+                    }
+                }
+            }
+            items(
+                messages.asReversed(),
+                key = { it.id ?: -it.timestamp.toInt() },
+                contentType = { if (it.role == ChatMessage.ROLE_USER) "user" else "assistant" }
+            ) { message ->
+                if (message.content.isNotEmpty()) {
+                    ChatBubble(
+                        message,
+                        isStreaming = isStreaming && message.id == streamingMessageId,
+                        onInfoClick = { onInfoClick(message) },
+                        onImageClick = onImageClick,
+                        onAskAi = onAskAi,
+                        onShowDetailsAtIndex = { index ->
+                            onShowDetailsAtIndex(message, index)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
 
-    var showDetailDialog by remember { mutableStateOf<ChatMessage?>(null) }
-    var showDeleteConfirmDialog by remember { mutableStateOf<Int?>(null) }
-    var showSessionInfoDialog by remember { mutableStateOf<Int?>(null) }
-    var showRenameDialogFor by remember { mutableStateOf<Int?>(null) }
-    var showModelSelector by remember { mutableStateOf(false) }
-    var previewImageUrl by remember { mutableStateOf<String?>(null) }
+@Composable
+fun ChatInputArea(
+    modifier: Modifier = Modifier,
+    chatInput: String,
+    isLoading: Boolean,
+    onChatInputChanged: (String) -> Unit,
+    onSendMessage: (String, List<Uri>, List<Uri>) -> Unit,
+    onStopGeneration: () -> Unit,
+    keyboardController: SoftwareKeyboardController?
+) {
+    val colors = AgentTheme.colors
+    val context = LocalContext.current
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var selectedImageUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var selectedFileUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var textFieldValue by remember {
+        mutableStateOf(TextFieldValue(chatInput, TextRange(chatInput.length)))
+    }
+
+    LaunchedEffect(chatInput) {
+        if (textFieldValue.text != chatInput) {
+            textFieldValue = TextFieldValue(chatInput, TextRange(chatInput.length))
+        }
+    }
 
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         selectedImageUris = (selectedImageUris + uris).distinct().take(10 - selectedFileUris.size)
@@ -101,505 +571,208 @@ fun AgentScreen(
         pendingCameraUri = null
     }
 
-    LaunchedEffect(messages.size, messages.lastOrNull()?.content, isLoading) {
-        if (messages.isNotEmpty()) {
-            delay(120)
-            listState.scrollToItem(
-                index = messages.lastIndex,
-                scrollOffset = Int.MAX_VALUE
-            )
-        }
+    val slashCommands = AgentViewModel.slashCommands
+    val kotlinCommands = AgentViewModel.kotlinCommands
+    val pythonCommands = AgentViewModel.pythonCommands
+    val javaCommands = AgentViewModel.javaCommands
+    val cCommands = AgentViewModel.cCommands
+    val cppCommands = AgentViewModel.cppCommands
+    val csharpCommands = AgentViewModel.csharpCommands
+    val sqlCommands = AgentViewModel.sqlCommands
+    val javascriptCommands = AgentViewModel.javascriptCommands
+    val allSlashCommands = remember {
+        (slashCommands + kotlinCommands + pythonCommands + javaCommands + cCommands + cppCommands +
+            csharpCommands + sqlCommands + javascriptCommands + "/mermaid-error")
+            .distinct()
     }
+    val slashQuery = chatInput
+        .takeIf { it.startsWith("/") && !it.contains(Regex("\\s")) }
+        ?.lowercase()
+    val matchingSlashCommands = slashQuery?.let { query ->
+        if (query == "/") {
+            slashCommands
+        } else {
+            allSlashCommands.filter { it.startsWith(query) }
+        }
+    }.orEmpty()
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        gesturesEnabled = true,
-        drawerContent = {
-            ModalDrawerSheet {
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = {
-                        viewModel.createNewChat()
-                        scope.launch { drawerState.close() }
-                    },
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        shape = RoundedCornerShape(28.dp),
+        color = colors.surface,
+        tonalElevation = 3.dp,
+        shadowElevation = 2.dp
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+            if (selectedImageUris.isNotEmpty() || selectedFileUris.isNotEmpty()) {
+                Row(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    shape = RoundedCornerShape(12.dp)
+                        .padding(start = 44.dp, top = 8.dp, bottom = 4.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("새 채팅 시작")
-                }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
-                Text(
-                    "최근 대화 목록",
-                    modifier = Modifier.padding(16.dp),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = if (isSystemInDarkTheme()) AgentPalette.darkPrimaryTextColor else AgentPalette.lightPrimaryTextColor
-                )
-
-                LazyColumn {
-                    items(sessions) { session ->
-                        NavigationDrawerItem(
-                            label = {
-                                Text(
-                                    session.title,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            },
-                            selected = session.id == currentSessionId,
-                            onClick = {
-                                viewModel.selectSession(session.id!!)
-                                scope.launch { drawerState.close() }
-                            },
-                            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                            badge = {
-                                IconButton(
-                                    onClick = {
-                                        viewModel.loadSessionStats(session.id!!)
-                                        showSessionInfoDialog = session.id
-                                    }
-                                ) {
-                                    Icon(Icons.Default.Info, contentDescription = "정보", modifier = Modifier.size(20.dp))
-                                }
+                    selectedImageUris.forEachIndexed { index, uri ->
+                        Box {
+                            AsyncImage(
+                                model = uri,
+                                contentDescription = "첨부 이미지 ${index + 1}",
+                                modifier = Modifier
+                                    .size(88.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                            )
+                            IconButton(
+                                onClick = {
+                                    selectedImageUris = selectedImageUris.filterIndexed { itemIndex, _ -> itemIndex != index }
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(28.dp)
+                                    .background(colors.background.copy(alpha = 0.75f), CircleShape)
+                            ) {
+                                Icon(Icons.Outlined.Close, contentDescription = "첨부 이미지 제거", tint = colors.attachmentRemoveIcon)
                             }
+                        }
+                    }
+                    selectedFileUris.forEachIndexed { index, uri ->
+                        AssistChip(
+                            onClick = { selectedFileUris = selectedFileUris.filterIndexed { itemIndex, _ -> itemIndex != index } },
+                            label = { Text(uri.lastPathSegment?.substringAfterLast('/') ?: "파일") },
+                            leadingIcon = { Icon(Icons.Outlined.Create, contentDescription = null) },
+                            trailingIcon = { Icon(Icons.Outlined.Close, contentDescription = "파일 제거") }
                         )
                     }
                 }
             }
-        }
-    ) {
-        Scaffold(
-            containerColor = if (darkTheme) AgentPalette.darkChatBackgroundColor else AgentPalette.lightChatBackgroundColor,
-            topBar = {
-                TopAppBar(
-                    title = {
-                        val sessionTitle = sessions.find { it.id == currentSessionId }?.title ?: "AI Agent Chat"
-                        Column {
-                            Text(
-                                sessionTitle,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            if (totalTokens > 0) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        "🪙 ${String.format(Locale.getDefault(), "%,d", totalTokens)}",
-                                        fontSize = 11.sp,
-                                        color = AgentPalette.metadataTextColor
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        "💸 ${Utils.formatCost(totalCost)}",
-                                        fontSize = 11.sp,
-                                        color = AgentPalette.metadataTextColor
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        "💬 ${messages.count { it.role == ChatMessage.ROLE_ASSISTANT }}",
-                                        fontSize = 11.sp,
-                                        color = AgentPalette.metadataTextColor
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(Icons.Default.Menu, contentDescription = "Menu")
-                        }
-                    },
-                    actions = {
-                        Box {
-                            IconButton(onClick = { showModelSelector = true }) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_gemini_color),
-                                    contentDescription = "Select Model",
-                                    modifier = Modifier
-                                        .size(24.dp)
-                                        .alpha(if (selectedModel == AiModelCatalog.smartModelName || selectedModel == AiModelCatalog.liteModelName) 1f else 0.75f),
-                                    tint = if (selectedModel == AiModelCatalog.liteModelName)
-                                        AgentPalette.metadataTextColor
-                                    else AgentPalette.geminiOriginalIconTint
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = showModelSelector,
-                                onDismissRequest = { showModelSelector = false }
-                            ) {
-                                Text(
-                                    text = "🤖 모델 선택",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                                )
 
-                                listOf(
-                                    AiModelCatalog.liteModelName to "Flash Lite (Fast)",
-                                    AiModelCatalog.modelName to "Flash (Balanced)",
-                                    AiModelCatalog.smartModelName to "Pro (Smart)"
-                                ).forEach { (modelId, label) ->
-                                    DropdownMenuItem(
-                                        text = { Text(label) },
-                                        onClick = {
-                                            viewModel.setModel(modelId)
-                                            showModelSelector = false
-                                        },
-                                        leadingIcon = {
-                                            RadioButton(
-                                                selected = selectedModel == modelId,
-                                                onClick = null
-                                            )
-                                        }
-                                    )
-                                }
-                                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                                Text(
-                                    text = "📏 전송할 대화 길이",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                                )
-
-                                listOf(
-                                    20 to "20개 (Economy)",
-                                    50 to "50개 (Balanced)",
-                                    -1 to "전체 (Unlimited)"
-                                ).forEach { (limit, label) ->
-                                    DropdownMenuItem(
-                                        text = { Text(label) },
-                                        onClick = {
-                                            viewModel.setHistoryLimit(limit)
-                                            showModelSelector = false
-                                        },
-                                        leadingIcon = {
-                                            RadioButton(
-                                                selected = selectedHistoryLimit == limit,
-                                                onClick = null
-                                            )
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
-                        IconButton(onClick = {
-                            currentSessionId?.let { showDeleteConfirmDialog = it }
-                        }) {
-                            Icon(Icons.Default.Delete, contentDescription = "Delete Current Chat")
-                        }
-                    }
-                )
-            }
-        ) { padding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-            ) {
-                if (messages.isEmpty() && currentSessionId == null) {
-                    Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.ic_gemini_color),
-                                contentDescription = null,
-                                modifier = Modifier.size(64.dp),
-                                tint = AgentPalette.geminiOriginalIconTint
-                            )
-                            Spacer(Modifier.height(16.dp))
-                            Text("무엇을 도와드릴까요?", style = MaterialTheme.typography.headlineSmall)
-                            Text("메시지를 보내면 스트리밍 응답이 생성됩니다.", style = MaterialTheme.typography.bodyMedium, color = AgentPalette.metadataTextColor)
-                        }
-                    }
-                } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .imePadding(),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        // [성능 최적화 4번: key + contentType]
-                        // key: 각 메시지를 고유 id로 식별해, 리스트가 갱신돼도 Compose가
-                        //   "어떤 아이템이 추가/이동/변경됐는지" 정확히 추적한다.
-                        //   (id가 null인 임시 항목 방지용 폴백: timestamp 기반 음수 값)
-                        // contentType: 사용자/어시스턴트 말풍선은 구조가 다른 컴포저블이므로
-                        //   타입을 나눠 표시하면 스크롤 시 구성 슬롯을 더 효율적으로 재사용한다.
-                        items(
-                            messages,
-                            key = { it.id ?: -it.timestamp.toInt() },
-                            contentType = { if (it.role == ChatMessage.ROLE_USER) "user" else "assistant" }
-                        ) { message ->
-                            if (message.content.isNotEmpty()) {
-                                ChatBubble(
-                                    message,
-                                    isStreaming = isStreaming && message.id == streamingMessageId,
-                                    onInfoClick = { showDetailDialog = it },
-                                    onImageClick = { previewImageUrl = it },
-                                    onAskAi = { errorMessage ->
-                                        viewModel.sendMessage(
-                                            "오류가 발생한 Mermaid 코드를 오류가 안나게 수정해서 다시 보내줘:\n\n$errorMessage"
-                                        )
-                                    },
-                                    onShowDetailsAtIndex = { index ->
-                                        viewModel.showDetailsAtIndex(message, index)
-                                    }
-                                )
-                            }
-                        }
-                        if (isLoading) {
-                            item {
-                                Box(
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                                    contentAlignment = Alignment.CenterStart
-                                ) {
-                                    CircularProgressIndicator(modifier = Modifier.size(32.dp), strokeWidth = 3.dp)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Surface(
+            if (!isLoading && matchingSlashCommands.isNotEmpty()) {
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    shape = RoundedCornerShape(28.dp),
-                    color = if (isSystemInDarkTheme()) AgentPalette.darkSurfaceColor else AgentPalette.lightSurfaceColor,
-                    tonalElevation = 3.dp,
-                    shadowElevation = 2.dp
+                        .padding(start = 44.dp, top = 4.dp, bottom = 4.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
-                        if (selectedImageUris.isNotEmpty() || selectedFileUris.isNotEmpty()) {
-                            Row(
-                                modifier = Modifier
-                                    .padding(start = 44.dp, top = 8.dp, bottom = 4.dp)
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                selectedImageUris.forEachIndexed { index, uri ->
-                                    Box {
-                                        AsyncImage(
-                                            model = uri,
-                                            contentDescription = "첨부 이미지 ${index + 1}",
-                                            modifier = Modifier
-                                                .size(88.dp)
-                                                .clip(RoundedCornerShape(12.dp))
-                                        )
-                                        IconButton(
-                                            onClick = {
-                                                selectedImageUris = selectedImageUris.filterIndexed { itemIndex, _ -> itemIndex != index }
-                                            },
-                                            modifier = Modifier
-                                                .align(Alignment.TopEnd)
-                                                .size(28.dp)
-                                                .background(AgentPalette.darkChatBackgroundColor.copy(alpha = 0.75f), CircleShape)
-                                        ) {
-                                            Icon(Icons.Default.Close, contentDescription = "첨부 이미지 제거", tint = AgentPalette.attachmentRemoveIconColor)
-                                        }
-                                    }
-                                }
-                                selectedFileUris.forEachIndexed { index, uri ->
-                                    AssistChip(
-                                        onClick = { selectedFileUris = selectedFileUris.filterIndexed { itemIndex, _ -> itemIndex != index } },
-                                        label = { Text(uri.lastPathSegment?.substringAfterLast('/') ?: "파일") },
-                                        leadingIcon = { Icon(Icons.Default.Create, contentDescription = null) },
-                                        trailingIcon = { Icon(Icons.Default.Close, contentDescription = "파일 제거") }
-                                    )
-                                }
-                            }
-                        }
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box {
-                                IconButton(
-                                    onClick = { showAttachmentMenu = true },
-                                    enabled = selectedImageUris.size + selectedFileUris.size < 10
-                                ) {
-                                    Icon(Icons.Default.Add, contentDescription = "첨부")
-                                }
-                                DropdownMenu(
-                                    expanded = showAttachmentMenu,
-                                    onDismissRequest = { showAttachmentMenu = false }
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("사진 선택") },
-                                        leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
-                                        onClick = {
-                                            showAttachmentMenu = false
-                                            galleryLauncher.launch("image/*")
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("파일 선택") },
-                                        leadingIcon = { Icon(Icons.Default.MailOutline, contentDescription = null) },
-                                        onClick = {
-                                            showAttachmentMenu = false
-                                            fileLauncher.launch("*/*")
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("카메라 촬영") },
-                                        leadingIcon = { Icon(Icons.Default.Face, contentDescription = null) },
-                                        onClick = {
-                                            showAttachmentMenu = false
-                                            createChatImageUri(context).let { uri ->
-                                                pendingCameraUri = uri
-                                                cameraLauncher.launch(uri)
-                                            }
-                                        }
-                                    )
-                                }
-                            }
-
-                            OutlinedTextField(
-                                value = chatInput,
-                                onValueChange = { viewModel.onChatInputChanged(it) },
-                                modifier = Modifier.weight(1f),
-                                placeholder = {
-                                    Text(
-                                        "AI에게 물어보세요...",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                                    )
-                                },
-                                maxLines = 5,
-                                shape = RoundedCornerShape(24.dp),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color.Transparent,
-                                    unfocusedBorderColor = Color.Transparent,
-                                    cursorColor = MaterialTheme.colorScheme.primary
-                                ),
-                                textStyle = MaterialTheme.typography.bodyMedium
-                            )
-
-                            IconButton(
-                                onClick = {
-                                    if (isLoading) {
-                                        viewModel.stopGeneration()
-                                    } else if (chatInput.isNotBlank() || selectedImageUris.isNotEmpty() || selectedFileUris.isNotEmpty()) {
-                                        viewModel.sendMessage(chatInput, selectedImageUris, selectedFileUris)
-                                        selectedImageUris = emptyList()
-                                        selectedFileUris = emptyList()
-                                        keyboardController?.hide()
-                                    }
-                                },
-                                enabled = isLoading || chatInput.isNotBlank() || selectedImageUris.isNotEmpty() || selectedFileUris.isNotEmpty(),
-                                modifier = Modifier
-                                    .padding(4.dp)
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (isLoading) MaterialTheme.colorScheme.errorContainer
-                                        else if (chatInput.isNotBlank() || selectedImageUris.isNotEmpty() || selectedFileUris.isNotEmpty()) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                                    )
-                            ) {
-                                Icon(
-                                    imageVector = if (isLoading) Icons.Default.Close else Icons.AutoMirrored.Filled.Send,
-                                    contentDescription = if (isLoading) "Stop" else "Send",
-                                    tint = if (isLoading) MaterialTheme.colorScheme.onErrorContainer
-                                    else if (chatInput.isNotBlank() || selectedImageUris.isNotEmpty() || selectedFileUris.isNotEmpty()) MaterialTheme.colorScheme.onPrimary
-                                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
+                    matchingSlashCommands.forEach { command ->
+                        AssistChip(
+                            onClick = {
+                                textFieldValue = TextFieldValue(command, TextRange(command.length))
+                                onChatInputChanged(command)
+                            },
+                            label = { Text(command) }
+                        )
                     }
                 }
             }
-        }
-    }
 
-    if (showDetailDialog != null) {
-        MessageDetailDialog(
-            message = showDetailDialog!!,
-            onDismiss = { showDetailDialog = null }
-        )
-    }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box {
+                    IconButton(
+                        onClick = { showAttachmentMenu = true },
+                        enabled = selectedImageUris.size + selectedFileUris.size < 10
+                    ) {
+                        Icon(Icons.Outlined.Add, contentDescription = "첨부", tint = AgentTheme.colors.assistantText)
+                    }
+                    DropdownMenu(
+                        expanded = showAttachmentMenu,
+                        onDismissRequest = { showAttachmentMenu = false },
+                        shape = RoundedCornerShape(20.dp),
+                        containerColor = colors.surface,
+                        modifier = Modifier.width(180.dp)
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.pick_photo), style = MaterialTheme.typography.bodyMedium) },
+                            leadingIcon = { Icon(Icons.Outlined.Photo, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                            onClick = {
+                                showAttachmentMenu = false
+                                galleryLauncher.launch("image/*")
+                            },
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.pick_file), style = MaterialTheme.typography.bodyMedium) },
+                            leadingIcon = { Icon(Icons.Outlined.FileUpload, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                            onClick = {
+                                showAttachmentMenu = false
+                                fileLauncher.launch("*/*")
+                            },
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.take_photo), style = MaterialTheme.typography.bodyMedium) },
+                            leadingIcon = { Icon(Icons.Outlined.CameraEnhance, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                            onClick = {
+                                showAttachmentMenu = false
+                                createChatImageUri(context).let { uri ->
+                                    pendingCameraUri = uri
+                                    cameraLauncher.launch(uri)
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+                }
 
-    previewImageUrl?.let { imageUrl ->
-        AlertDialog(
-            onDismissRequest = { previewImageUrl = null },
-            confirmButton = {},
-            text = {
-                AsyncImage(
-                    model = imageUrl,
-                    contentDescription = "이미지 미리보기",
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        )
-    }
-
-    if (showDeleteConfirmDialog != null) {
-        val isAll = showDeleteConfirmDialog == -1
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirmDialog = null },
-            title = { Text(if (isAll) "전체 삭제" else "대화 삭제") },
-            text = { Text(if (isAll) "모든 대화 기록을 삭제하시겠습니까?" else "이 대화방을 삭제하시겠습니까?") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        if (isAll) viewModel.clearChat()
-                        else viewModel.deleteSession(showDeleteConfirmDialog!!)
-                        showDeleteConfirmDialog = null
+                OutlinedTextField(
+                    value = textFieldValue,
+                    onValueChange = {
+                        textFieldValue = it
+                        onChatInputChanged(it.text)
                     },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    modifier = Modifier.weight(1f),
+                    placeholder = {
+                        Text(
+                            stringResource(R.string.input_placeholder),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.onBackground.copy(alpha = 0.6f)
+                        )
+                    },
+                    maxLines = 5,
+                    shape = RoundedCornerShape(24.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color.Transparent,
+                        unfocusedBorderColor = Color.Transparent,
+                        cursorColor = colors.primary,
+                        focusedTextColor = colors.assistantText,
+                        unfocusedTextColor = colors.assistantText
+                    ),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.assistantText)
+                )
+
+                IconButton(
+                    onClick = {
+                        if (isLoading) {
+                            onStopGeneration()
+                        } else if (chatInput.isNotBlank() || selectedImageUris.isNotEmpty() || selectedFileUris.isNotEmpty()) {
+                            onSendMessage(chatInput, selectedImageUris, selectedFileUris)
+                            selectedImageUris = emptyList()
+                            selectedFileUris = emptyList()
+                            keyboardController?.hide()
+                        }
+                    },
+                    enabled = isLoading || chatInput.isNotBlank() || selectedImageUris.isNotEmpty() || selectedFileUris.isNotEmpty(),
+                    modifier = Modifier
+                        .padding(4.dp)
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isLoading) colors.errorContainer
+                            else if (chatInput.isNotBlank() || selectedImageUris.isNotEmpty() || selectedFileUris.isNotEmpty()) colors.primary
+                            else colors.surface.copy(alpha = 0.3f)
+                        )
                 ) {
-                    Text("삭제")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirmDialog = null }) {
-                    Text("취소")
+                    Icon(
+                        imageVector = if (isLoading) Icons.Default.Close else Icons.AutoMirrored.Filled.Send,
+                        contentDescription = if (isLoading) "Stop" else "Send",
+                        tint = if (isLoading) colors.onErrorContainer
+                        else if (chatInput.isNotBlank() || selectedImageUris.isNotEmpty() || selectedFileUris.isNotEmpty()) colors.onPrimary
+                        else colors.onBackground.copy(alpha = 0.4f),
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
-        )
-    }
-
-    if (showSessionInfoDialog != null) {
-        sessions.find { it.id == showSessionInfoDialog }?.let { session ->
-            SessionInfoDialog(
-                session = session,
-                stats = sessionStats,
-                onDelete = {
-                    showSessionInfoDialog = null
-                    showDeleteConfirmDialog = session.id
-                },
-                onRename = { showRenameDialogFor = session.id },
-                onDismiss = { showSessionInfoDialog = null }
-            )
         }
-    }
-
-    if (showRenameDialogFor != null) {
-        sessions.find { it.id == showRenameDialogFor }?.let { session ->
-            RenameSessionDialog(
-                currentTitle = session.title,
-                onConfirm = { newTitle ->
-                    viewModel.renameSession(session.id!!, newTitle)
-                    showRenameDialogFor = null
-                },
-                onDismiss = { showRenameDialogFor = null }
-            )
-        }
-    }
-
-    if (detailItems != null) {
-        SimpleDetailListDialog(
-            data = detailItems!!,
-            onDismiss = { viewModel.dismissDetailItems() }
-        )
     }
 }
 
@@ -613,26 +786,22 @@ fun ChatBubble(
     onShowDetailsAtIndex: (Int) -> Unit = {}
 ) {
     val isUser = message.role == ChatMessage.ROLE_USER
-    val darkTheme = isSystemInDarkTheme()
-    val bubbleColor = when {
-        isUser && darkTheme -> AgentPalette.darkUserMessageBubbleColor
-        isUser -> AgentPalette.lightUserMessageBubbleColor
-        darkTheme -> AgentPalette.darkAssistantMessageBubbleColor
-        else -> AgentPalette.lightAssistantMessageBubbleColor
-    }
+    val colors = AgentTheme.colors
+    val bubbleColor = if (isUser) colors.userBubble else colors.assistantBubble
 
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(0.92f),
+            modifier = if (isUser) Modifier.wrapContentSize() else Modifier.fillMaxWidth(),
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
         ) {
             Surface(
                 color = bubbleColor,
                 shape = RoundedCornerShape(20.dp),
-                tonalElevation = if (isUser) 0.dp else 1.dp
+                tonalElevation = 0.dp,
+                modifier = if (isUser) Modifier.widthIn(max = 320.dp) else Modifier.fillMaxWidth()
             ) {
                 AiChatMarkdownView(
                     markdown = message.content,
@@ -653,18 +822,11 @@ fun ChatBubble(
                     Text(
                         text = formatTime(message.timestamp),
                         fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        color = colors.onBackground.copy(alpha = 0.5f)
                     )
-                } else {
-                    if (message.role == ChatMessage.ROLE_ASSISTANT) {
-                        AiMetadataView(message, onInfoClick = { onInfoClick(message) })
-                    } else {
-                        Text(
-                            text = formatTime(message.timestamp),
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                        )
-                    }
+                }
+                if (!isUser && message.role == ChatMessage.ROLE_ASSISTANT) {
+                    AiMetadataView(message, onInfoClick = { onInfoClick(message) })
                 }
             }
         }
@@ -676,26 +838,27 @@ fun AiMetadataView(
     message: ChatMessage,
     onInfoClick: () -> Unit
 ) {
+    val colors = AgentTheme.colors
     Row(
-        modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+        modifier = Modifier.padding(start = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(onClick = onInfoClick, modifier = Modifier.size(16.dp)) {
+        IconButton(onClick = onInfoClick, modifier = Modifier.size(16.dp).offset(y = 0.725.dp)) {
             Icon(
                 Icons.Default.Info,
                 contentDescription = "Details",
-                tint = AgentPalette.metadataTextColor.copy(alpha = 0.6f),
-                modifier = Modifier.size(12.dp)
+                tint = colors.metadataText.copy(alpha = 0.6f),
+                modifier = Modifier.size(13.dp)
             )
         }
         Spacer(modifier = Modifier.width(4.dp))
         val infoText = buildString {
-            append("🤖 ${message.modelName ?: "UNKNOWN"} | ")
-            append("🪙 ${String.format(Locale.getDefault(), "%,d", message.totalTokens ?: 0)} | ")
-            append("💸 ${Utils.formatCost(message.estimatedCostKrw ?: 0.0)} | ")
+            append("🤖 ${message.modelName ?: stringResource(R.string.unknown)}  ")
+            append("🪙 ${String.format(Locale.getDefault(), "%,d", message.totalTokens ?: 0)}  ")
+            append("💸 ${Utils.formatCost(message.estimatedCostUsd ?: 0.0)}  ")
             append("⏱️ ${Utils.formatDurationMs(message.responseTimeMs ?: 0)}")
         }
-        Text(text = infoText, fontSize = 10.sp, color = AgentPalette.metadataTextColor.copy(alpha = 0.8f))
+        Text(text = infoText, fontSize = 10.sp, color = colors.metadataText.copy(alpha = 0.8f))
     }
 }
 
