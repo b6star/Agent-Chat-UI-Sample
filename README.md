@@ -96,7 +96,7 @@ The bundled `MockAiGateway` demonstrates the same contract with deterministic ch
 
 - Emit `Chunk` repeatedly while generating; the ViewModel accumulates them and flushes to storage every 250 ms.
 - Emitting `Metadata` before the stream ends fills the bubble footer (tokens, cost, latency). Omit it if your provider doesn't supply usage stats.
-- Emit `ShowDetails` items to power the "[자세히 보기]" (see details) inline dialog.
+- Emit `ShowDetails` items to power the "[View Details]" (see details) inline dialog.
 - Cancellation (`stopGeneration()`) simply cancels the collecting coroutine — clean up your upstream flow accordingly.
 - The current repository is in-memory (data resets on process death). To persist, replace `ChatRepository` internals with Room or DataStore while keeping its public API.
 
