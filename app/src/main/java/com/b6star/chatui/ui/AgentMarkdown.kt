@@ -97,12 +97,25 @@ fun AiChatMarkdownView(
                     }
                     is MarkdownBlock.Code -> {
                         val isMermaid = block.language == "mermaid"
+                        val completedCodeRenderKey = remember(block.value, block.language) {
+                            listOf(block.value, block.language).hashCode().let { hash ->
+                                if (hash == 0) 1 else hash
+                            }
+                        }
                         CodeWebView(
                             code = block.value,
                             declaredLanguage = block.language,
                             mermaid = isMermaid && !isStreaming,
-                            renderKey = if (isStreaming) 0 else markdown.hashCode(),
+                            renderKey = completedCodeRenderKey,
                             onAskAi = onAskAi
+                        )
+                    }
+                    is MarkdownBlock.PendingCode -> {
+                        Text(
+                            text = block.value,
+                            modifier = Modifier.padding(vertical = 2.dp),
+                            color = textColor,
+                            style = MaterialTheme.typography.bodyMedium
                         )
                     }
                     MarkdownBlock.Spacer -> Spacer(modifier = Modifier.height(12.dp))
@@ -197,6 +210,7 @@ private fun TableCell(text: String, isHeader: Boolean, colors: AgentColors) {
 sealed interface MarkdownBlock {
     data class Text(val value: String) : MarkdownBlock
     data class Code(val value: String, val language: String) : MarkdownBlock
+    data class PendingCode(val value: String) : MarkdownBlock
     data object Spacer : MarkdownBlock
     data object Divider : MarkdownBlock
     data class Table(val headers: List<String>, val rows: List<List<String>>) : MarkdownBlock
@@ -292,7 +306,7 @@ fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
 
     flushTable()
     if (codeBuffer != null) {
-        result += MarkdownBlock.Code(codeBuffer.toString().trimEnd(), language)
+        result += MarkdownBlock.PendingCode(codeBuffer.toString().trimEnd())
     } else {
         flushText()
     }
